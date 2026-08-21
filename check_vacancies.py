@@ -108,7 +108,31 @@ MAX_AGE_DAYS = 3  # shundan eski e'lonlar "yangi" deb yuborilmaydi (kalit so'z
                    # ro'yxati kengaytirilganda eski vakansiyalar to'satdan mos
                    # kelib, "yangi" sifatida qayta yuborilib qolmasligi uchun)
 
-MAX_WORKERS = 8  # bir vaqtda parallel yuboriladigan so'rovlar soni
+# MUHIM (tezlik uchun): oldingi versiyada MAX_WORKERS=8 edi, lekin 33 ta
+# kalit so'z bor. ThreadPoolExecutor 8 ta worker bilan ishlaganda, ba'zi
+# workerlarga ketma-ket 4-5 ta so'rov tushib qolishi mumkin edi. Agar shu
+# 4-5 tadan biri (tarmoq beqarorligi tufayli) ulanish o'rnata olmasa va
+# 30 sekundlik timeout'ga urilsa, bu 30 sekundlar bitta workerda KETMA-KET
+# qo'shilib ketardi (masalan 5 x 30s = 150s) — aynan shu "ba'zida 150s"
+# muammosining sababi shu edi. Yechim: barcha kalit so'zlarni BIR VAQTDA
+# (workerlar soni = kalit so'zlar soniga teng) yuborish — bular I/O-bog'liq
+# (tarmoqqa navbat kutish) vazifalar bo'lgani uchun CPU'ga deyarli yuk
+# solmaydi, shuning uchun 33 ta parallel thread ochish butunlay xavfsiz.
+# Shunda hatto bir nechta so'rov timeout'ga uchrasa ham, ular PARALLEL
+# kutiladi va umumiy vaqtga faqat BITTA timeout miqdoricha qo'shiladi.
+MAX_WORKERS = len(SEARCH_KEYWORDS)
+
+# Oldingi versiyada timeout=30 yagona son edi — bu ulanish (connect) va
+# javob o'qish (read) uchun BIR XIL 30 sekund degani edi. Aslida
+# muvaffaqiyatli ulanish odatda 1 sekunddan kam vaqt oladi; agar 8 sekundda
+# ham ulanish o'rnatilmasa, demak u "o'lik" ulanish va qolgan 22 sekundni
+# kutishning ma'nosi yo'q. Shuning uchun ulanish va javob timeout'lari
+# alohida-alohida (connect, read) qilib qisqartirildi — bu har bir "o'lik"
+# so'rovning eng ko'p yo'qotadigan vaqtini 30s dan 8s ga tushiradi.
+CONNECT_TIMEOUT_SECONDS = 8
+READ_TIMEOUT_SECONDS = 20
+REQUEST_TIMEOUT = (CONNECT_TIMEOUT_SECONDS, READ_TIMEOUT_SECONDS)
+
 MAX_RETRIES = 3  # 429 (Too Many Requests) xatosida qayta urinishlar soni
 RETRY_BACKOFF_SECONDS = 3  # har qayta urinishda kutish (progressiv ravishda oshadi)
 
@@ -122,6 +146,21 @@ HEADERS = {
         "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     )
 }
+
+# Barcha thread'lar BITTA umumiy Session'ni ishlatadi — shunda bir xil
+# hostga (tashkent.hh.uz) qayta-qayta yangi TCP/TLS ulanish ochish
+# o'rniga, mavjud ulanishlar qayta ishlatiladi (HTTP keep-alive). Bu har
+# bir so'rovdagi TLS handshake xarajatini yo'qotadi va 33 ta parallel
+# so'rov yuborilganda sezilarli tezlik beradi. pool_maxsize MAX_WORKERS
+# ga tenglashtirilgan, shunda hech bir thread ulanish uchun navbatda
+# turib qolmaydi.
+_adapter = requests.adapters.HTTPAdapter(
+    pool_connections=MAX_WORKERS,
+    pool_maxsize=MAX_WORKERS,
+)
+SESSION = requests.Session()
+SESSION.mount("https://", _adapter)
+SESSION.mount("http://", _adapter)
 
 
 def load_seen_ids():
