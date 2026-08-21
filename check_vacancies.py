@@ -18,6 +18,7 @@ Ishlash printsipi:
 import html
 import json
 import os
+import random
 import re
 import time
 import xml.etree.ElementTree as ET
@@ -108,33 +109,17 @@ MAX_AGE_DAYS = 3  # shundan eski e'lonlar "yangi" deb yuborilmaydi (kalit so'z
                    # ro'yxati kengaytirilganda eski vakansiyalar to'satdan mos
                    # kelib, "yangi" sifatida qayta yuborilib qolmasligi uchun)
 
-# MUHIM (tezlik uchun): oldingi versiyada MAX_WORKERS=8 edi, lekin 33 ta
-# kalit so'z bor. ThreadPoolExecutor 8 ta worker bilan ishlaganda, ba'zi
-# workerlarga ketma-ket 4-5 ta so'rov tushib qolishi mumkin edi. Agar shu
-# 4-5 tadan biri (tarmoq beqarorligi tufayli) ulanish o'rnata olmasa va
-# 30 sekundlik timeout'ga urilsa, bu 30 sekundlar bitta workerda KETMA-KET
-# qo'shilib ketardi (masalan 5 x 30s = 150s) — aynan shu "ba'zida 150s"
-# muammosining sababi shu edi. Yechim: barcha kalit so'zlarni BIR VAQTDA
-# (workerlar soni = kalit so'zlar soniga teng) yuborish — bular I/O-bog'liq
-# (tarmoqqa navbat kutish) vazifalar bo'lgani uchun CPU'ga deyarli yuk
-# solmaydi, shuning uchun 33 ta parallel thread ochish butunlay xavfsiz.
-# Shunda hatto bir nechta so'rov timeout'ga uchrasa ham, ular PARALLEL
-# kutiladi va umumiy vaqtga faqat BITTA timeout miqdoricha qo'shiladi.
-MAX_WORKERS = len(SEARCH_KEYWORDS)
-
-# Oldingi versiyada timeout=30 yagona son edi — bu ulanish (connect) va
-# javob o'qish (read) uchun BIR XIL 30 sekund degani edi. Aslida
-# muvaffaqiyatli ulanish odatda 1 sekunddan kam vaqt oladi; agar 8 sekundda
-# ham ulanish o'rnatilmasa, demak u "o'lik" ulanish va qolgan 22 sekundni
-# kutishning ma'nosi yo'q. Shuning uchun ulanish va javob timeout'lari
-# alohida-alohida (connect, read) qilib qisqartirildi — bu har bir "o'lik"
-# so'rovning eng ko'p yo'qotadigan vaqtini 30s dan 8s ga tushiradi.
-CONNECT_TIMEOUT_SECONDS = 8
-READ_TIMEOUT_SECONDS = 20
-REQUEST_TIMEOUT = (CONNECT_TIMEOUT_SECONDS, READ_TIMEOUT_SECONDS)
-
-MAX_RETRIES = 3  # 429 (Too Many Requests) xatosida qayta urinishlar soni
-RETRY_BACKOFF_SECONDS = 3  # har qayta urinishda kutish (progressiv ravishda oshadi)
+MAX_WORKERS = 8  # bir vaqtda parallel yuboriladigan so'rovlar soni
+MAX_RETRIES = 2  # 429 (Too Many Requests) xatosida qayta urinishlar soni
+RETRY_BACKOFF_SECONDS = 2  # boshlang'ich kutish vaqti (progressiv oshadi)
+RETRY_BACKOFF_CAP_SECONDS = 6  # bitta urinishdagi kutish vaqtining yuqori chegarasi
+# Eslatma: agar bitta kalit so'z shu ishga tushishda muvaffaqiyatsiz bo'lsa
+# ham, u seen_ids'ga qo'shilmagani uchun KEYINGI ishga tushishda (6 daqiqadan
+# keyin, MAX_AGE_DAYS=3 kun ichida) baribir qayta tekshiriladi va hech narsa
+# yo'qolmaydi. Shu sababli tez "taslim bo'lish" (kam urinish, qisqa kutish)
+# xavfsiz — va aynan shu narsa barcha 30 ta kalit so'z bir vaqtda
+# rate-limitga uchraganda umumiy ishga tushish vaqtini (ba'zida 150s gacha
+# cho'zilishini) keskin qisqartiradi.
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
@@ -147,20 +132,19 @@ HEADERS = {
     )
 }
 
-# Barcha thread'lar BITTA umumiy Session'ni ishlatadi — shunda bir xil
-# hostga (tashkent.hh.uz) qayta-qayta yangi TCP/TLS ulanish ochish
-# o'rniga, mavjud ulanishlar qayta ishlatiladi (HTTP keep-alive). Bu har
-# bir so'rovdagi TLS handshake xarajatini yo'qotadi va 33 ta parallel
-# so'rov yuborilganda sezilarli tezlik beradi. pool_maxsize MAX_WORKERS
-# ga tenglashtirilgan, shunda hech bir thread ulanish uchun navbatda
-# turib qolmaydi.
+# Har bir so'rov uchun alohida requests.get() chaqirilsa, "qopqoq ostida"
+# har safar YANGI Session (demak yangi TCP/TLS ulanish) ochiladi — 30 ta
+# so'rov bir xil hostga (tashkent.hh.uz) borsa ham. Bitta umumiy Session
+# ishlatib, ulanishlarni thread'lar orasida qayta ishlatamiz (connection
+# pooling) — bu har bir so'rovdagi handshake xarajatini yo'qotadi va
+# MAX_WORKERS soniga mos pool hajmi bilan thread'lar orasida to'siqsiz
+# ishlaydi.
+_session = requests.Session()
 _adapter = requests.adapters.HTTPAdapter(
-    pool_connections=MAX_WORKERS,
-    pool_maxsize=MAX_WORKERS,
+    pool_connections=MAX_WORKERS, pool_maxsize=MAX_WORKERS
 )
-SESSION = requests.Session()
-SESSION.mount("https://", _adapter)
-SESSION.mount("http://", _adapter)
+_session.mount("https://", _adapter)
+_session.mount("http://", _adapter)
 
 
 def load_seen_ids():
@@ -269,10 +253,22 @@ def fetch_vacancies_for_keyword(keyword):
     resp = None
     for attempt in range(1, MAX_RETRIES + 1):
         try:
-            resp = requests.get(RSS_URL, params=params, headers=HEADERS, timeout=30)
+            resp = _session.get(RSS_URL, params=params, headers=HEADERS, timeout=30)
             if resp.status_code == 429:
-                wait = RETRY_BACKOFF_SECONDS * attempt
-                print(f"[{keyword}] 429 (Too Many Requests) — {wait} sek kutib, qayta urinilmoqda ({attempt}/{MAX_RETRIES})")
+                # Server aniq kutish vaqtini bersa ("Retry-After"), o'shani
+                # hurmat qilamiz (lekin cap bilan cheklab, bitta so'rov
+                # butun ishga tushishni cho'zib yubormasligi uchun).
+                # Aks holda progressiv backoff ishlatiladi.
+                retry_after = resp.headers.get("Retry-After")
+                if retry_after and retry_after.strip().isdigit():
+                    base_wait = int(retry_after)
+                else:
+                    base_wait = RETRY_BACKOFF_SECONDS * attempt
+                # Jitter (tasodifiy qo'shimcha) — parallel thread'larning
+                # barchasi bir xil soniyada qayta urinib, yana birgalikda
+                # 429'ga uchrab qolishining (thundering herd) oldini oladi.
+                wait = min(RETRY_BACKOFF_CAP_SECONDS, base_wait) + random.uniform(0, 1)
+                print(f"[{keyword}] 429 (Too Many Requests) — {wait:.1f} sek kutib, qayta urinilmoqda ({attempt}/{MAX_RETRIES})")
                 time.sleep(wait)
                 continue
             resp.raise_for_status()
@@ -394,7 +390,7 @@ def send_to_telegram(text):
         "disable_web_page_preview": False,
     }
     try:
-        resp = requests.post(TELEGRAM_API_URL, data=payload, timeout=30)
+        resp = _session.post(TELEGRAM_API_URL, data=payload, timeout=30)
         if not resp.ok:
             print(f"Telegramga yuborishda xatolik: {resp.status_code} {resp.text}")
             return False
