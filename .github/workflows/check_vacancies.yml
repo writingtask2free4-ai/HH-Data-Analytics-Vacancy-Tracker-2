@@ -3,7 +3,7 @@ name: Check hh.uz data analytics vacancies
 on:
   schedule:
     # Har 30 daqiqada ishga tushadi (UTC vaqti bo'yicha)
-    - cron: "*/6 * * * *"
+    - cron: "*/7 * * * *"
   workflow_dispatch: {}  # GitHub saytida qo'lda ishga tushirish uchun
 
 jobs:
@@ -19,8 +19,6 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-          cache: "pip"
-          cache-dependency-path: requirements.txt
 
       - name: Kutubxonalarni o'rnatish
         run: pip install -r requirements.txt
