@@ -18,6 +18,7 @@ Ishlash printsipi:
 import html
 import json
 import os
+import random
 import re
 import time
 import xml.etree.ElementTree as ET
@@ -38,7 +39,7 @@ HH_AREA_ID = 2759  # Toshkent
 # 2) shu ildizlarning barcha shakllari (analitikning, analyticsdagi va h.k.)
 # bitta so'rov bilan qamrab olinadi.
 SEARCH_KEYWORDS = [
-    "analitik", "стажер", "intern",
+    "стажер", "intern",
     "analyst", "analytic",
     "аналитик", "аналист", "data", "дата",
 ]
@@ -58,11 +59,19 @@ MAX_AGE_DAYS = 3  # shundan eski e'lonlar "yangi" deb yuborilmaydi (kalit so'z
                    # ro'yxati kengaytirilganda eski vakansiyalar to'satdan mos
                    # kelib, "yangi" sifatida qayta yuborilib qolmasligi uchun)
 
-MAX_WORKERS = len(SEARCH_KEYWORDS)  # barcha kalit so'zlar BIR VAQTDA (bitta
-                                     # "to'lqin"da) yuborilishi uchun ishchilar
-                                     # sonini kalit so'zlar soniga tenglashtiramiz
+MAX_WORKERS = 4  # bir vaqtda parallel yuboriladigan so'rovlar soni.
+                  # Ataylab kalit so'zlar sonidan (9) kamroq qilib
+                  # qo'yilgan: barcha so'rovlarni BITTA ONDA (burst)
+                  # yuborish real foydalanuvchi trafigiga o'xshamaydi va
+                  # anti-bot/WAF tizimlari tomonidan shubhali deb
+                  # belgilanish ehtimolini oshiradi. REQUEST_JITTER bilan
+                  # birga so'rovlar vaqt bo'yicha "yoyilib" yuboriladi.
 MAX_RETRIES = 3  # 429 (Too Many Requests) VA ulanish xatosi/timeout'da qayta urinishlar soni
 RETRY_BACKOFF_SECONDS = 2  # har qayta urinishda kutish (progressiv ravishda oshadi)
+REQUEST_JITTER_MAX_SECONDS = 1.5  # har bir so'rovdan oldin 0 dan shu qadargacha
+                                   # tasodifiy kutish — barcha so'rovlar bir
+                                   # zumda emas, sekundlar davomida "tabiiy"
+                                   # tarqalib yuboriladi
 
 # (connect_timeout, read_timeout) — ikkiga bo'lingan timeout:
 # - connect_timeout: hh.uz bilan TCP ulanish o'rnatilishini kutish vaqti.
@@ -175,6 +184,10 @@ def fetch_vacancies_for_keyword(session, keyword):
     qisqartirilgani uchun bu behuda vaqt sarflamaydi). Boshqa xatolarda
     (parsing va h.k.) butun skriptni to'xtatmaslik uchun bo'sh ro'yxat
     qaytaradi va xatoni konsolga chiqaradi."""
+    # So'rovlar barchasi bir zumda (burst) emas, sekundlar davomida
+    # tasodifiy tarqalib yuborilishi uchun kichik kutish
+    time.sleep(random.uniform(0, REQUEST_JITTER_MAX_SECONDS))
+
     params = {
         "text": keyword,
         "area": HH_AREA_ID,
