@@ -18,7 +18,6 @@ Ishlash printsipi:
 import html
 import json
 import os
-import random
 import re
 import time
 import xml.etree.ElementTree as ET
@@ -33,73 +32,23 @@ HH_AREA_ID = 2759  # Toshkent
 # hh.uz RSS'i "OR" mantiqini URL ichida to'g'ri qo'llamaydi (filtrsiz natija
 # qaytarib yuboradi), shuning uchun har bir so'z alohida so'rov sifatida
 # yuboriladi va natijalar keyin birlashtiriladi.
-# Bu ro'yxat ataylab keng ildiz so'zlardan ("анализ", "tahlil" kabi) qochadi,
-# chunki ular deyarli har qanday vakansiyada uchraydi (masalan "bozorni
-# tahlil qilish", "moliyaviy anализ") va noaniq natija beradi. Buning o'rniga
-# aynan data analytics kasbiga (va unga yaqin rollarga) tegishli aniq
-# iboralar ishlatiladi.
+# Ro'yxat ataylab qisqa va keng ildiz so'zlardan iborat (aniq iboralar
+# o'rniga), shunda: 1) hh.uz'ga yuboriladigan so'rovlar soni kamayadi
+# (tezroq ishlaydi, timeout bo'lganda ham umumiy kutish vaqti qisqaradi),
+# 2) shu ildizlarning barcha shakllari (analitikning, analyticsdagi va h.k.)
+# bitta so'rov bilan qamrab olinadi.
 SEARCH_KEYWORDS = [
-    # --- Data Analyst / Analytics ---
-    "data analyst",
-    "data analytics",
-    "аналитик данных",
-    "аналитик по данным",
-    "дата-аналитик",
-    "дата аналитик",
-    "data analytic",
-    # --- Data Scientist / Engineer ---
-    "data scientist",
-    "data engineer",
-    "дата-инженер",
-    "инженер данных",
-    "data engineering",
-    "big data",
-    "machine learning engineer",
-    "ML engineer",
-    # --- BI (Business Intelligence) ---
-    "BI аналитик",
-    "BI-аналитик",
-    "business intelligence",
-    "BI developer",
-    "Power BI",
-    "Tableau",
-    "analytics engineer",
-    # --- Yaqin/qo'shni rollar ---
-    "product analyst",
-    "продуктовый аналитик",
-    "бизнес-аналитик",
-    "business analyst",
-    "quantitative analyst",
-    "marketing analyst",
-    "маркетинговый аналитик",
-    "financial analyst",
-    "финансовый аналитик",
-    "web analytics",
-    "веб-аналитик",
-    # --- O'zbekcha ---
-    "ma'lumotlar tahlilchisi",
+    "analitik", "стажер", "intern",
+    "analyst", "analytic",
+    "аналитик", "аналист", "data", "дата",
 ]
 
-# Sarlavhada bu "ildiz" so'zlardan (butun so'z sifatida, boshqa harflar
-# bilan qo'shilib ketmagan holda) biri uchrasa ham vakansiya qabul
-# qilinadi: analitik/analyst/BI/data va ularning turli shakllari.
-# \b (so'z chegarasi) tufayli "bilan", "database" kabi so'zlar ichidagi
-# tasodifiy moslik hisobga olinmaydi.
-# Bular prefiks sifatida qidiriladi (masalan "analitik" so'zi
-# "analitikning", "analitikaga" kabi qo'shimchali shakllarni ham qamrab oladi)
-ROOT_PREFIXES = [
-    "analitik", "analitika",
-    "analyst", "analytic", "analytics",
-    "аналитик", "аналитика", "аналист",
-    "data", "дата",
-]
-# "bi" juda qisqa bo'lgani uchun faqat ALOHIDA SO'Z sifatida (masalan
-# "BI aналитик", "Senior BI") qidiriladi — "biznes", "bilan" kabi
-# so'zlar ichidagi tasodifiy moslikni chiqarib tashlash uchun.
-ROOT_EXACT_WORDS = ["bi"]
-
-ROOT_PATTERNS = [re.compile(rf"\b{re.escape(w)}\w*", re.IGNORECASE) for w in ROOT_PREFIXES]
-ROOT_PATTERNS += [re.compile(rf"\b{re.escape(w)}\b", re.IGNORECASE) for w in ROOT_EXACT_WORDS]
+# Sarlavhada shu so'zlardan (prefiks sifatida, so'z chegarasi bilan) biri
+# uchrasa ham vakansiya qabul qilinadi (masalan "analitik" so'zi
+# "analitikning", "analitikaga" kabi qo'shimchali shakllarni ham qamrab
+# oladi). \b (so'z chegarasi) tufayli "bilan", "database" kabi so'zlar
+# ichidagi tasodifiy moslik hisobga olinmaydi.
+ROOT_PATTERNS = [re.compile(rf"\b{re.escape(w)}\w*", re.IGNORECASE) for w in SEARCH_KEYWORDS]
 
 RSS_URL = "https://tashkent.hh.uz/search/vacancy/rss"
 SEEN_IDS_FILE = "seen_ids.json"
@@ -110,16 +59,8 @@ MAX_AGE_DAYS = 3  # shundan eski e'lonlar "yangi" deb yuborilmaydi (kalit so'z
                    # kelib, "yangi" sifatida qayta yuborilib qolmasligi uchun)
 
 MAX_WORKERS = 8  # bir vaqtda parallel yuboriladigan so'rovlar soni
-MAX_RETRIES = 2  # 429 (Too Many Requests) xatosida qayta urinishlar soni
-RETRY_BACKOFF_SECONDS = 2  # boshlang'ich kutish vaqti (progressiv oshadi)
-RETRY_BACKOFF_CAP_SECONDS = 6  # bitta urinishdagi kutish vaqtining yuqori chegarasi
-# Eslatma: agar bitta kalit so'z shu ishga tushishda muvaffaqiyatsiz bo'lsa
-# ham, u seen_ids'ga qo'shilmagani uchun KEYINGI ishga tushishda (6 daqiqadan
-# keyin, MAX_AGE_DAYS=3 kun ichida) baribir qayta tekshiriladi va hech narsa
-# yo'qolmaydi. Shu sababli tez "taslim bo'lish" (kam urinish, qisqa kutish)
-# xavfsiz — va aynan shu narsa barcha 30 ta kalit so'z bir vaqtda
-# rate-limitga uchraganda umumiy ishga tushish vaqtini (ba'zida 150s gacha
-# cho'zilishini) keskin qisqartiradi.
+MAX_RETRIES = 3  # 429 (Too Many Requests) xatosida qayta urinishlar soni
+RETRY_BACKOFF_SECONDS = 3  # har qayta urinishda kutish (progressiv ravishda oshadi)
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
@@ -131,20 +72,6 @@ HEADERS = {
         "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     )
 }
-
-# Har bir so'rov uchun alohida requests.get() chaqirilsa, "qopqoq ostida"
-# har safar YANGI Session (demak yangi TCP/TLS ulanish) ochiladi — 30 ta
-# so'rov bir xil hostga (tashkent.hh.uz) borsa ham. Bitta umumiy Session
-# ishlatib, ulanishlarni thread'lar orasida qayta ishlatamiz (connection
-# pooling) — bu har bir so'rovdagi handshake xarajatini yo'qotadi va
-# MAX_WORKERS soniga mos pool hajmi bilan thread'lar orasida to'siqsiz
-# ishlaydi.
-_session = requests.Session()
-_adapter = requests.adapters.HTTPAdapter(
-    pool_connections=MAX_WORKERS, pool_maxsize=MAX_WORKERS
-)
-_session.mount("https://", _adapter)
-_session.mount("http://", _adapter)
 
 
 def load_seen_ids():
@@ -169,23 +96,14 @@ def strip_html(text):
 
 
 def matched_keyword(title):
-    """Sarlavhada SEARCH_KEYWORDS ro'yxatidagi to'liq iboralardan yoki
-    ROOT_PREFIXES/ROOT_EXACT_WORDS ro'yxatidagi ildiz so'zlardan biri
-    bor-yo'qligini tekshiradi. hh.uz RSS qidiruvi "fuzzy" ishlaydi
-    (tavsifda yoki mos kelmaydigan bo'limda so'z uchrasa ham natija
-    qaytaradi — masalan "Project Manager"), shuning uchun faqat
-    SARLAVHADA aynan mos so'z bo'lgan vakansiyalar qabul qilinadi.
-    Mos kelgan so'zni qaytaradi, aks holda None."""
+    """Sarlavhada SEARCH_KEYWORDS ro'yxatidagi ildiz so'zlardan (va ularning
+    qo'shimchali shakllaridan) biri bor-yo'qligini tekshiradi. hh.uz RSS
+    qidiruvi "fuzzy" ishlaydi (tavsifda yoki mos kelmaydigan bo'limda so'z
+    uchrasa ham natija qaytaradi), shuning uchun faqat SARLAVHADA aynan mos
+    so'z bo'lgan vakansiyalar qabul qilinadi. Mos kelgan so'zni qaytaradi,
+    aks holda None."""
     title_lower = title.lower()
 
-    # 1) Avval to'liq/aniq iboralar tekshiriladi (masalan "Power BI", "Tableau")
-    for keyword in SEARCH_KEYWORDS:
-        if keyword.lower() in title_lower:
-            return keyword
-
-    # 2) Keyin ildiz so'zlar tekshiriladi: "analitik", "analyst", "data",
-    # "BI" va shu kabi barcha shakllar (masalan "Senior Data Analyst",
-    # "Junior Analitik", "BI Developer")
     for pattern in ROOT_PATTERNS:
         match = pattern.search(title_lower)
         if match:
@@ -253,22 +171,10 @@ def fetch_vacancies_for_keyword(keyword):
     resp = None
     for attempt in range(1, MAX_RETRIES + 1):
         try:
-            resp = _session.get(RSS_URL, params=params, headers=HEADERS, timeout=30)
+            resp = requests.get(RSS_URL, params=params, headers=HEADERS, timeout=30)
             if resp.status_code == 429:
-                # Server aniq kutish vaqtini bersa ("Retry-After"), o'shani
-                # hurmat qilamiz (lekin cap bilan cheklab, bitta so'rov
-                # butun ishga tushishni cho'zib yubormasligi uchun).
-                # Aks holda progressiv backoff ishlatiladi.
-                retry_after = resp.headers.get("Retry-After")
-                if retry_after and retry_after.strip().isdigit():
-                    base_wait = int(retry_after)
-                else:
-                    base_wait = RETRY_BACKOFF_SECONDS * attempt
-                # Jitter (tasodifiy qo'shimcha) — parallel thread'larning
-                # barchasi bir xil soniyada qayta urinib, yana birgalikda
-                # 429'ga uchrab qolishining (thundering herd) oldini oladi.
-                wait = min(RETRY_BACKOFF_CAP_SECONDS, base_wait) + random.uniform(0, 1)
-                print(f"[{keyword}] 429 (Too Many Requests) — {wait:.1f} sek kutib, qayta urinilmoqda ({attempt}/{MAX_RETRIES})")
+                wait = RETRY_BACKOFF_SECONDS * attempt
+                print(f"[{keyword}] 429 (Too Many Requests) — {wait} sek kutib, qayta urinilmoqda ({attempt}/{MAX_RETRIES})")
                 time.sleep(wait)
                 continue
             resp.raise_for_status()
@@ -390,7 +296,7 @@ def send_to_telegram(text):
         "disable_web_page_preview": False,
     }
     try:
-        resp = _session.post(TELEGRAM_API_URL, data=payload, timeout=30)
+        resp = requests.post(TELEGRAM_API_URL, data=payload, timeout=30)
         if not resp.ok:
             print(f"Telegramga yuborishda xatolik: {resp.status_code} {resp.text}")
             return False
