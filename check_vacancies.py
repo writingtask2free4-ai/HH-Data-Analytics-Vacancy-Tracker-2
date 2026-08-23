@@ -59,19 +59,23 @@ MAX_AGE_DAYS = 3  # shundan eski e'lonlar "yangi" deb yuborilmaydi (kalit so'z
                    # ro'yxati kengaytirilganda eski vakansiyalar to'satdan mos
                    # kelib, "yangi" sifatida qayta yuborilib qolmasligi uchun)
 
-MAX_WORKERS = 4  # bir vaqtda parallel yuboriladigan so'rovlar soni.
-                  # Ataylab kalit so'zlar sonidan (9) kamroq qilib
-                  # qo'yilgan: barcha so'rovlarni BITTA ONDA (burst)
-                  # yuborish real foydalanuvchi trafigiga o'xshamaydi va
-                  # anti-bot/WAF tizimlari tomonidan shubhali deb
-                  # belgilanish ehtimolini oshiradi. REQUEST_JITTER bilan
-                  # birga so'rovlar vaqt bo'yicha "yoyilib" yuboriladi.
+MAX_WORKERS = 8  # bir vaqtda parallel yuboriladigan so'rovlar soni.
+                  # SEARCH_KEYWORDS sonicha (8) qilib qo'yilgan: barcha
+                  # so'rovlar BITTA to'lqinda ketadi (ikkinchi to'lqin
+                  # kutilmaydi). hh.uz vaqtincha butunlay ulanmay
+                  # qolganda (connect-timeout, 429 emas) worst-case
+                  # kutish vaqti shu bois ~2x qisqaradi (ikkita ketma-ket
+                  # to'lqin o'rniga bitta to'lqin). Bot-detection xavfini
+                  # kamaytirish uchun REQUEST_JITTER kengaytirilgan —
+                  # so'rovlar baribir bir zumda emas, tarqalib yuboriladi.
 MAX_RETRIES = 3  # 429 (Too Many Requests) VA ulanish xatosi/timeout'da qayta urinishlar soni
 RETRY_BACKOFF_SECONDS = 2  # har qayta urinishda kutish (progressiv ravishda oshadi)
-REQUEST_JITTER_MAX_SECONDS = 1.5  # har bir so'rovdan oldin 0 dan shu qadargacha
+REQUEST_JITTER_MAX_SECONDS = 2.5  # har bir so'rovdan oldin 0 dan shu qadargacha
                                    # tasodifiy kutish — barcha so'rovlar bir
                                    # zumda emas, sekundlar davomida "tabiiy"
-                                   # tarqalib yuboriladi
+                                   # tarqalib yuboriladi. MAX_WORKERS 8 ga
+                                   # oshirilgani uchun bu oyna ham
+                                   # kengaytirildi (avval 1.5s edi).
 
 # (connect_timeout, read_timeout) — ikkiga bo'lingan timeout:
 # - connect_timeout: hh.uz bilan TCP ulanish o'rnatilishini kutish vaqti.
